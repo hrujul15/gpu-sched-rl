@@ -54,6 +54,8 @@ if __name__ == "__main__":
 
     summary = df.groupby("policy")[["avg_jct", "miss_rate", "max_wait", "avg_util"]].mean().round(3)
     print(summary)
+    rcols = [c for c in df.columns if c.startswith("r_")]
+    print(df.groupby("policy")[rcols].mean().round(1))
 
     fig, axes = plt.subplots(1, 4, figsize=(14, 3))
     for ax, col in zip(axes, summary.columns):

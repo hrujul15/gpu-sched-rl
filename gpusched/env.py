@@ -21,9 +21,11 @@ from .jobs import Job, WorkloadConfig, generate_workload
 
 @dataclass
 class RewardConfig:
-    w_util: float = 0.02          # per-tick bonus * utilization
+    w_idle: float = 0.05          # for idle penalty
     w_complete: float = 1.0       # per completed job (throughput)
-    w_miss: float = 2.0           # extra penalty per missed deadline
+    w_miss: float = 1.5           # extra penalty per missed deadline
+    w_late: float = 0.02          # lateness penalty
+    w_wait: float = 0.02          # wait penalty for each pending job in queue
     w_starve: float = 0.01        # per-tick penalty per starving job
     starve_threshold: int = 30    # ticks waiting before a job counts as starving
     w_invalid: float = 0.1        # penalty for an invalid action (unmasked algos)
@@ -62,6 +64,7 @@ class GPUClusterEnv(gym.Env):
 
     # ------------------------------------------------------------------ API
     def reset(self, *, seed=None, options=None):
+        # start new episode
         super().reset(seed=seed)
         if seed is not None:
             self._rng = np.random.default_rng(seed)
@@ -78,9 +81,13 @@ class GPUClusterEnv(gym.Env):
         self.free = self.n_gpus
         self._util_hist: list[float] = []
         self._admit()
+        # keeping log of terms, to adjust penalty weights
+        self._terms = dict.fromkeys(["idle", "starve", "wait", "late", "miss"], 0.0)
         return self._obs(), {}
 
     def step(self, action: int):
+        # take a decision, note doesnt advance time
+        # allows agent to start many jobs at once
         reward = 0.0
         valid = self.action_masks()
         if action < self.K and valid[action]:
@@ -96,6 +103,8 @@ class GPUClusterEnv(gym.Env):
         return self._obs(), float(reward), terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
+        # do masking, set false to those jobs which cant be chosen
+        # at all, so network doesnt try to choose them
         m = np.zeros(self.K + 1, dtype=bool)
         for i, job in enumerate(self.queue[: self.K]):
             m[i] = job.gpus <= self.free
@@ -104,10 +113,12 @@ class GPUClusterEnv(gym.Env):
 
     # ------------------------------------------------------------ internals
     def _admit(self):
+        # admit job
         while self.pending and self.pending[0].arrival <= self.t:
             self.queue.append(self.pending.pop(0))
 
     def _start(self, job: Job):
+        # start a job 
         self.queue.remove(job)
         job.start = self.t
         job.finish = self.t + job.runtime
@@ -116,24 +127,47 @@ class GPUClusterEnv(gym.Env):
 
     def _tick(self) -> float:
         """Advance one tick; return the shaped reward for that tick."""
+        # advance time
+
         r = 0.0
         busy = self.n_gpus - self.free
         self._util_hist.append(busy / self.n_gpus)
-        r += self.rw.w_util * (busy / self.n_gpus)
-        r -= self.rw.w_starve * sum(1 for j in self.queue if self.t - j.arrival > self.rw.starve_threshold)
+
+        # idle penalty, if gpu free and job can be put on it but not there
+        idle = 0.0
+        if any(j.gpus <= self.free for j in self.queue[: self.K]):
+            idle = self.rw.w_idle * (self.free / self.n_gpus)
+            
+        # starving penalty for jobs ignored for long
+        starve = self.rw.w_starve * sum(1 for j in self.queue if self.t - j.arrival > self.rw.starve_threshold)
+
+        # wait penalty for each waiting job in queue
+        wait = self.rw.w_wait * len(self.queue)
+
+        r -= idle + starve + wait
+        self._terms["idle"] -= idle
+        self._terms["starve"] -= starve
+        self._terms["wait"] -= wait
+
 
         self.t += 1
         for job in [j for j in self.running if j.finish <= self.t]:
             self.running.remove(job)
             self.free += job.gpus
             self.done.append(job)
+            # reward for job done - lateness
             r += self.rw.w_complete
+            late = self.rw.w_late * max(0, job.finish - job.deadline)
+            r -= late
+            self._terms["late"] -= late
             if job.finish > job.deadline:
                 r -= self.rw.w_miss
+                self._terms["miss"] -= self.rw.w_miss
         self._admit()
         return r
 
     def _obs(self) -> np.ndarray:
+        # build the 43 numbers that descibr our current state
         max_rt = self.wl_cfg.max_runtime
         if self.running:
             next_free = min(j.start + j.est_runtime - self.t for j in self.running)
@@ -159,8 +193,10 @@ class GPUClusterEnv(gym.Env):
         return np.asarray(cluster + feats, dtype=np.float32)
 
     def _metrics(self) -> dict:
+        # metrics for the run
         done = self.done
         n = max(len(done), 1)
+        
         return {
             "jobs_done": len(done),
             "jobs_total": len(self.jobs),
@@ -169,4 +205,36 @@ class GPUClusterEnv(gym.Env):
             "max_wait": max([j.start - j.arrival for j in done], default=0),
             "avg_util": float(np.mean(self._util_hist)) if self._util_hist else 0.0,
             "makespan": self.t,
+            **{f"r_{k}": v for k, v in self._terms.items()},
         }
+'''
+# waiting cost: total over an episode ~ sum of wait times (JCT proxy)
+r -= self.rw.w_wait * len(self.queue)
+# idle cost: GPUs sitting free while a queued job could use them
+if any(j.gpus <= self.free for j in self.queue[: self.K]):
+    r -= self.rw.w_idle * (self.free / self.n_gpus)
+'''
+'''
+- **Util term (`w_util`):** replace the flat bonus with an idle penalty. 
+    Subtract `w_idle x free/n_gpus`, but only on ticks where some job in the 
+    first K queue slots fits in the free GPUs. Keep `_util_hist.append` for metrics.
+
+- **Completion term (`w_complete`):** make it depend on turnaround. On each completion, 
+    subtract `w_flow x (finish - arrival) / max(runtime, 1)`. Keep a small flat base 
+    if you want.
+
+- **Waiting term (optional but recommended):** subtract `w_wait x len(queue)` every tick. 
+    It is a dense turnaround signal, so use either this or the slowdown term at full weight, 
+    or both at small weights. Don't stack both at full strength.
+
+- **Keep:** the deadline-miss penalty. Reconsider the starvation penalty, 
+    since the waiting term overlaps with it.
+
+- **`RewardConfig`:** add `w_idle`, `w_flow` and `w_wait`. Drop `w_util` once it's unused.
+
+- **Before training:** print per-episode totals of each reward term under FIFO and SJF, 
+    and adjust the weights until no term is about 10 times bigger than the rest.
+
+- **After changing:** retrain from scratch. `ppo_v1` was trained on the old reward, 
+    so it isn't comparable.
+'''

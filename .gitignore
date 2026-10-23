@@ -1,9 +1,8 @@
 __pycache__/
 *.pyc
 .venv/
-models/
+
 runs/
-*.zip
-results/*.csv
-results/*.png
+
+
 !results/.gitkeep
