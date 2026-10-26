@@ -20,6 +20,8 @@ def test_gpu_accounting_never_negative():
         _, _, term, trunc, _ = env.step(int(rng.choice(valid)))
         assert 0 <= env.free <= env.n_gpus
         assert env.free + sum(j.gpus for j in env.running) == env.n_gpus
+        assert 0 <= env.free_mem <= env.n_mem
+        assert env.free_mem + sum(j.mem for j in env.running) == env.n_mem
         if term or trunc:
             break
 
