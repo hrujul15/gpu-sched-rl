@@ -35,8 +35,11 @@ if __name__ == "__main__":
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--tag", default="eval")
     ap.add_argument("--workload", default="default", choices=["default", "hard"])
-    ap.add_argument("--hide-rank-feats", action="store_true",
-                    help="must match how the model was trained")
+    ap.add_argument(
+        "--hide-rank-feats",
+        action="store_true",
+        help="must match how the model was trained",
+    )
     args = ap.parse_args()
 
     def make_eval_env():
@@ -68,9 +71,7 @@ if __name__ == "__main__":
             obs = e._obs()
             if vec_norm is not None:
                 obs = vec_norm.normalize_obs(obs)
-            a, _ = model.predict(
-                obs, action_masks=e.action_masks(), deterministic=True
-            )
+            a, _ = model.predict(obs, action_masks=e.action_masks(), deterministic=True)
             return int(a)
 
         policies["ppo"] = agent
@@ -95,8 +96,17 @@ if __name__ == "__main__":
     rcols = [c for c in df.columns if c.startswith("r_")]
     print(df.groupby("policy")[rcols].mean().round(1))
 
-    fig, axes = plt.subplots(1, 5, figsize=(17, 3))
+    fig = plt.figure(figsize=(10, 9), layout="constrained")
+    gs = fig.add_gridspec(3, 4)
+
+    axes = [
+        fig.add_subplot(gs[0, 0:2]),  # g1
+        fig.add_subplot(gs[0, 2:4]),  # g2
+        fig.add_subplot(gs[1, 0:2]),  # g3
+        fig.add_subplot(gs[1, 2:4]),  # g4
+        fig.add_subplot(gs[2, 1:3]),  # g5, centered
+    ]
     for ax, col in zip(axes, summary.columns):
         summary[col].plot.bar(ax=ax, title=col)
-    plt.tight_layout()
+    # plt.tight_layout()    
     plt.savefig(f"results/{args.tag}.png", dpi=150)

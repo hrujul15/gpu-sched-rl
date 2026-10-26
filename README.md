@@ -41,7 +41,7 @@ Use Python 3.10 or newer. On Windows, activate the environment with `.venv\Scrip
 Run the following commands **in order** from the repository root. Training saves the model to `models/ppo_v9_hard`.
 
 ```bash
-python scripts/train.py --workload hard --steps 1000000 --out models/ppo_v9_hard
+python scripts/train.py --workload hard --steps 3000000 --out models/ppo_v9_hard
 ```
 
 The evaluation runs use arrival rate `0.4` for the seen-load setting and `0.7` for the unseen-load setting. Each evaluates 100 episodes. Evaluation outputs are saved under `results/` as CSV data and PNG plots.
