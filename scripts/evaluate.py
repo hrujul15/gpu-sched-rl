@@ -1,5 +1,5 @@
 """Compare baselines and a trained agent on fixed seeds.
-python scripts/evaluate.py --model models/ppo_v1 --rate 0.9 --episodes 30
+python scripts/evaluate.py --model models/ppo_v5 --rate 0.9 --episodes 30
 """
 
 import argparse
@@ -40,12 +40,33 @@ if __name__ == "__main__":
     policies = dict(BASELINES)
     if args.model:
         from sb3_contrib import MaskablePPO
+        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
         model = MaskablePPO.load(args.model)
 
+        # Load VecNormalize stats if available (needed for correct obs scaling)
+        vec_norm = None
+        base = args.model.replace(".zip", "")
+        vec_norm_path = base + "_vecnormalize.pkl"
+        if os.path.exists(vec_norm_path):
+            dummy = DummyVecEnv(
+                [
+                    lambda: GPUClusterEnv(
+                        workload=WorkloadConfig(arrival_rate=args.rate)
+                    )
+                ]
+            )
+            vec_norm = VecNormalize.load(vec_norm_path, dummy)
+            vec_norm.training = False
+            vec_norm.norm_reward = False
+            print(f"Loaded VecNormalize from {vec_norm_path}")
+
         def agent(e):
+            obs = e._obs()
+            if vec_norm is not None:
+                obs = vec_norm.normalize_obs(obs)
             a, _ = model.predict(
-                e._obs(), action_masks=e.action_masks(), deterministic=True
+                obs, action_masks=e.action_masks(), deterministic=True
             )
             return int(a)
 

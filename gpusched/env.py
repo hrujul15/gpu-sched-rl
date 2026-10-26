@@ -24,15 +24,16 @@ from .jobs import Job, WorkloadConfig, generate_workload
 class RewardConfig:
     w_idle: float = 0.05  # for idle penalty
     w_complete: float = 1.0  # per completed job (throughput)
-    w_miss: float = 1.5  # extra penalty per missed deadline
-    w_late: float = 0.02  # lateness penalty
-    w_wait: float = 0.02  # wait penalty for each pending job in queue
+    w_miss: float = 2.0  # extra penalty per missed deadline (↑ from 1.5)
+    w_late: float = 0.03  # lateness penalty (↑ from 0.02)
+    w_wait: float = 0.015  # wait penalty for each pending job (↓ from 0.02)
     w_starve: float = 0.01  # per-tick penalty per starving job
     starve_threshold: int = 30  # ticks waiting before a job counts as starving
     w_invalid: float = 0.1  # penalty for an invalid action (unmasked algos)
+    w_flow: float = 0.5  # penalise turnaround time on completion
 
 
-JOB_FEATS = 6
+JOB_FEATS = 9
 CLUSTER_FEATS = 4
 
 
@@ -98,7 +99,7 @@ class GPUClusterEnv(gym.Env):
         self._util_hist: list[float] = []
         self._admit()
         # keeping log of terms, to adjust penalty weights
-        self._terms = dict.fromkeys(["idle", "starve", "wait", "late", "miss"], 0.0)
+        self._terms = dict.fromkeys(["idle", "starve", "wait", "late", "miss", "flow"], 0.0)
         return self._obs(), {}
 
     def step(self, action: int):
@@ -185,8 +186,12 @@ class GPUClusterEnv(gym.Env):
             self.running.remove(job)
             self._release(job)
             self.done.append(job)
-            # reward for job done - lateness
+            # reward for job done - flow time - lateness
             r += self.rw.w_complete
+            # flow-time penalty: shorter turnaround → less penalty → favours SJF
+            flow = self.rw.w_flow * (job.finish - job.arrival) / self.wl_cfg.max_runtime
+            r -= flow
+            self._terms["flow"] -= flow
             late = self.rw.w_late * max(0, job.finish - job.deadline)
             r -= late
             self._terms["late"] -= late
@@ -197,7 +202,7 @@ class GPUClusterEnv(gym.Env):
         return r
 
     def _obs(self) -> np.ndarray:
-        # build the 43 numbers that descibr our current state
+        # CLUSTER_FEATS + JOB_FEATS * K = 4 + 9*8 = 76 numbers
         max_rt = self.wl_cfg.max_runtime
         if self.running:
             next_free = min(j.start + j.est_runtime - self.t for j in self.running)
@@ -211,10 +216,24 @@ class GPUClusterEnv(gym.Env):
             next_free,
         ]
 
+        # Precompute rank and mean runtime for jobs in the visible window
+        window = self.queue[: self.K]
+        n_win = len(window)
+        if n_win > 0:
+            est_rts = [j.est_runtime for j in window]
+            sorted_order = np.argsort(est_rts)
+            ranks = np.empty(n_win)
+            for rank, idx in enumerate(sorted_order):
+                ranks[idx] = rank
+            mean_rt = max(float(np.mean(est_rts)), 1.0)
+        else:
+            ranks = np.array([])
+            mean_rt = 1.0
+
         feats = []
         for i in range(self.K):
-            if i < len(self.queue):
-                j = self.queue[i]
+            if i < n_win:
+                j = window[i]
                 slack = (j.deadline - self.t - j.est_runtime) / max_rt
                 feats += [
                     j.gpus / self.n_gpus,
@@ -223,6 +242,10 @@ class GPUClusterEnv(gym.Env):
                     float(np.clip(slack, -1, 1)),
                     min(self.t - j.arrival, 100) / 100.0,
                     1.0,
+                    # ── new SJF-informative features ──
+                    ranks[i] / max(n_win - 1, 1),  # 0 = shortest est_rt
+                    float(np.clip(j.est_runtime / mean_rt - 1.0, -1, 1)),
+                    1.0 if self._fits(j) else 0.0,
                 ]
             else:
                 feats += [0.0] * JOB_FEATS
