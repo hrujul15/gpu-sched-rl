@@ -114,7 +114,7 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="models/ppo_v7")
     ap.add_argument("--envs", type=int, default=8)
-    ap.add_argument("--pretrain-episodes", type=int, default=500,
+    ap.add_argument("--pretrain-episodes", type=int, default=0,
                     help="SJF demonstration episodes; set 0 to disable imitation warm-start")
     ap.add_argument("--imitation-epochs", type=int, default=12)
     ap.add_argument("--workload", default="default", choices=["default", "hard"])
@@ -139,7 +139,6 @@ if __name__ == "__main__":
         gamma=0.995, gae_lambda=0.95, ent_coef=0.005, n_epochs=10,
         clip_range=0.2,
         policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
-        tensorboard_log="runs/",
     )
 
     if args.pretrain_episodes > 0:

@@ -85,8 +85,3 @@ def generate_workload(cfg: WorkloadConfig, rng: np.random.Generator) -> list[Job
         jobs.append(Job(i, int(arrivals[i]), gpus, mem, rt, est, deadline))
     return jobs
 
-
-def load_trace_csv(path: str) -> list[Job]:
-    """TODO: parse a public cluster trace (e.g. Philly / Helios / Alibaba PAI)
-    into Job objects: arrival tick, gpus, runtime; synthesize est_runtime/deadline."""
-    raise NotImplementedError

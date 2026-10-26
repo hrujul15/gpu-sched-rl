@@ -331,35 +331,3 @@ class GPUClusterEnv(gym.Env):
             **{f"r_{k}": v for k, v in self._terms.items()},
         }
 
-
-"""
-# waiting cost: total over an episode ~ sum of wait times (JCT proxy)
-r -= self.rw.w_wait * len(self.queue)
-# idle cost: GPUs sitting free while a queued job could use them
-if any(j.gpus <= self.free for j in self.queue[: self.K]):
-    r -= self.rw.w_idle * (self.free / self.n_gpus)
-"""
-"""
-- **Util term (`w_util`):** replace the flat bonus with an idle penalty. 
-    Subtract `w_idle x free/n_gpus`, but only on ticks where some job in the 
-    first K queue slots fits in the free GPUs. Keep `_util_hist.append` for metrics.
-
-- **Completion term (`w_complete`):** make it depend on turnaround. On each completion, 
-    subtract `w_flow x (finish - arrival) / max(runtime, 1)`. Keep a small flat base 
-    if you want.
-
-- **Waiting term (optional but recommended):** subtract `w_wait x len(queue)` every tick. 
-    It is a dense turnaround signal, so use either this or the slowdown term at full weight, 
-    or both at small weights. Don't stack both at full strength.
-
-- **Keep:** the deadline-miss penalty. Reconsider the starvation penalty, 
-    since the waiting term overlaps with it.
-
-- **`RewardConfig`:** add `w_idle`, `w_flow` and `w_wait`. Drop `w_util` once it's unused.
-
-- **Before training:** print per-episode totals of each reward term under FIFO and SJF, 
-    and adjust the weights until no term is about 10 times bigger than the rest.
-
-- **After changing:** retrain from scratch. `ppo_v1` was trained on the old reward, 
-    so it isn't comparable.
-"""

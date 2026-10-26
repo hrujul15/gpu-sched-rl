@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GPU Scheduler Live</title>
+    <style>
+        :root {
+            --bg: #f6f7f9;
+            --card: #fff;
+            --ink: #1b1f24;
+            --mute: #6b7380;
+            --line: #e3e6ea;
+            --acc: #2f6fed;
+            --ok: #1f9d63;
+            --bad: #d64545;
+            --warn: #d98a12;
+            --bar: #dfe6f5
+        }
+
+        @media (prefers-color-scheme:dark) {
+            :root {
+                --bg: #14171b;
+                --card: #1d2127;
+                --ink: #e8ebef;
+                --mute: #8d96a3;
+                --line: #2d333b;
+                --acc: #6b9bff;
+                --ok: #43c283;
+                --bad: #f06a6a;
+                --warn: #e6a23c;
+                --bar: #2a3550
+            }
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif
+        }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 16px;
+            align-items: center;
+            padding: 12px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--line);
+            position: sticky;
+            top: 0;
+            z-index: 5
+        }
+
+        header h1 {
+            font-size: 16px;
+            margin: 0 8px 0 0
+        }
+
+        label {
+            color: var(--mute);
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px
+        }
+
+        select,
+        input,
+        button {
+            font: inherit;
+            color: var(--ink);
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 5px 8px
+        }
+
+        input[type=number] {
+            width: 70px
+        }
+
+        input[type=range] {
+            padding: 0;
+            width: 110px
+        }
+
+        button {
+            cursor: pointer
+        }
+
+        button:hover {
+            border-color: var(--acc)
+        }
+
+        button.primary {
+            background: var(--acc);
+            border-color: var(--acc);
+            color: #fff
+        }
+
+        button.danger {
+            border-color: var(--bad);
+            color: var(--bad)
+        }
+
+        button:disabled,
+        select:disabled,
+        input:disabled {
+            opacity: .45;
+            cursor: not-allowed
+        }
+
+        .spacer {
+            flex: 1
+        }
+
+        main {
+            max-width: 1250px;
+            margin: 0 auto;
+            padding: 16px;
+            display: grid;
+            gap: 14px
+        }
+
+        .kpis {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 10px
+        }
+
+        .kpi,
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 12px 14px
+        }
+
+        .kpi .v {
+            font-size: 22px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums
+        }
+
+        .kpi .l {
+            color: var(--mute);
+            font-size: 12px
+        }
+
+        .grid2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px
+        }
+
+        @media(max-width:900px) {
+            .grid2 {
+                grid-template-columns: 1fr
+            }
+        }
+
+        h2 {
+            font-size: 13px;
+            margin: 0 0 10px;
+            color: var(--mute);
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            font-weight: 600
+        }
+
+        .gpus {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 8px
+        }
+
+        .gpu {
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 4px 6px;
+            font-size: 11px;
+            color: var(--mute)
+        }
+
+        .gpu .bar {
+            height: 8px;
+            background: var(--bar);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 3px
+        }
+
+        .gpu .bar i {
+            display: block;
+            height: 100%;
+            background: var(--acc)
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-variant-numeric: tabular-nums
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 4px 6px;
+            border-bottom: 1px solid var(--line);
+            font-size: 13px
+        }
+
+        th {
+            color: var(--mute);
+            font-weight: 500;
+            font-size: 12px
+        }
+
+        .tag {
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 9px;
+            border: 1px solid var(--line);
+            color: var(--mute)
+        }
+
+        .tag.ok {
+            color: var(--ok);
+            border-color: var(--ok)
+        }
+
+        .tag.bad {
+            color: var(--bad);
+            border-color: var(--bad)
+        }
+
+        .tag.warn {
+            color: var(--warn);
+            border-color: var(--warn)
+        }
+
+        .prog {
+            height: 6px;
+            background: var(--bar);
+            border-radius: 3px;
+            overflow: hidden;
+            min-width: 60px
+        }
+
+        .prog i {
+            display: block;
+            height: 100%;
+            background: var(--ok)
+        }
+
+        canvas {
+            width: 100%;
+            height: 150px;
+            display: block
+        }
+
+        .legend {
+            display: flex;
+            gap: 14px;
+            font-size: 12px;
+            color: var(--mute);
+            margin-top: 4px
+        }
+
+        .legend b {
+            display: inline-block;
+            width: 10px;
+            height: 3px;
+            margin-right: 4px;
+            vertical-align: middle
+        }
+
+        form.add {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            align-items: end
+        }
+
+        form.add label {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px
+        }
+
+        .msg {
+            font-size: 12px;
+            color: var(--bad);
+            min-height: 16px;
+            margin-top: 6px
+        }
+
+        .empty {
+            color: var(--mute);
+            font-size: 13px;
+            padding: 6px 0
+        }
+
+        #summary {
+            display: none;
+            border-color: var(--acc)
+        }
+
+        #summary h3 {
+            margin: 14px 0 6px;
+            font-size: 13px
+        }
+
+        .best {
+            font-weight: 700;
+            color: var(--ok)
+        }
+
+        .banner {
+            background: var(--card);
+            border: 1px solid var(--warn);
+            color: var(--warn);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            display: none
+        }
+
+        .scroll {
+            max-height: 260px;
+            overflow: auto
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>GPU Scheduler Live</h1>  <select id="policy"></select> <label>Speed <input type="range"
+                id="speed" min="1" max="30" value="2"><span id="speedv">2</span> ticks/s</label> <label>Auto-arrivals
+            <input type="number" id="auto" min="0" max="5" step="0.1" value="0"> jobs/tick</label> <button
+            id="pause">Pause</button> <span class="spacer"></span> <button id="reset">New session</button> <button
+            id="end" class="danger">End session</button>
+    </header>
+    <main>
+        <div class="banner" id="modelerr"></div>
+        <div class="kpis" id="kpis"></div>
+        <div class="card">
+            <h2>Add a job</h2>
+            <form class="add" id="addform"> <label>GPUs <input type="number" name="gpus" min="1" max="16" value="2"
+                        required></label> <label>Memory / GPU (GB) <input type="number" name="mem_per_gpu" min="1"
+                        max="40" value="16" required></label> <label>Runtime (ticks) <input type="number" name="runtime"
+                        min="1" max="100" value="20" required></label> <label>Est. runtime <input type="number"
+                        name="est_runtime" min="1" max="100" placeholder="= runtime"></label> <label>Deadline in (ticks)
+                    <input type="number" name="deadline_in" min="1" placeholder="2.5 x runtime"></label> <button
+                    class="primary" type="submit">Add job</button> <button type="button" id="rand1">+ random</button>
+                <button type="button" id="rand10">+ 10 random</button>
+            </form>
+            <div class="msg" id="msg"></div>
+        </div>
+        <div class="grid2">
+            <div class="card">
+                <h2>GPU memory (used / <span id="gm"></span> GB)</h2>
+                <div class="gpus" id="gpus"></div>
+            </div>
+            <div class="card">
+                <h2>Utilisation and queue</h2><canvas id="chart" width="600" height="150"></canvas>
+                <div class="legend"><span><b style="background:var(--acc)"></b>GPUs busy</span><span><b
+                            style="background:var(--ok)"></b>memory used</span><span><b
+                            style="background:var(--warn)"></b>queue length (scaled)</span></div>
+            </div>
+        </div>
+        <div class="grid2">
+            <div class="card">
+                <h2>Queue (<span id="nq">0</span>)</h2>
+                <div class="scroll" id="queue"></div>
+            </div>
+            <div class="card">
+                <h2>Running (<span id="nr">0</span>)</h2>
+                <div class="scroll" id="running"></div>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Recently completed</h2>
+            <div id="done"></div>
+        </div>
+        <div class="card" id="summary"></div>
+    </main>
+    <script>
+        const $ = id => document.getElementById(id);
+        const api = (p, b) => fetch('/api/' + p, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(b || {})
+        }).then(r => r.json());
+        const f = (x, d = 2) => x == null ? '-' : Number(x).toFixed(d);
+        const pct = x => x == null ? '-' : (100 * x).toFixed(1) + '%';
+        let S = null,
+            busyInput = {
+                policy: 0,
+                speed: 0,
+                auto: 0
+            };
+
+        function flash(m) {
+            $('msg').textContent = m || '';
+        }
+        $('addform').addEventListener('submit', async e => {
+            e.preventDefault();
+            const d = Object.fromEntries(new FormData(e.target).entries());
+            const r = await api('add_job', d);
+            flash(r.ok ? '' : r.error);
+            if (r.ok) poll();
+        });
+        $('rand1').onclick = async () => {
+            const r = await api('add_random', {
+                n: 1
+            });
+            flash(r.ok ? '' : r.error);
+            poll();
+        };
+        $('rand10').onclick = async () => {
+            const r = await api('add_random', {
+                n: 10
+            });
+            flash(r.ok ? '' : r.error);
+            poll();
+        };
+        $('pause').onclick = () => api('pause', {
+            paused: !S.paused
+        }).then(poll);
+        $('end').onclick = () => {
+            if (confirm('End the session and compute final stats?')) api('end').then(poll);
+        };
+        $('reset').onclick = () => {
+            if (!S.ended && S.n_jobs > 0 && !confirm('Discard the current session?')) return;
+            api('reset').then(poll);
+        };
+        $('policy').onchange = e => api('policy', {
+            name: e.target.value
+        });
+        $('speed').oninput = e => {
+            $('speedv').textContent = e.target.value;
+            api('speed', {
+                speed: e.target.value
+            });
+        };
+        $('auto').onchange = e => api('auto', {
+            rate: e.target.value
+        });
+
+        function kpi(l, v) {
+            return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`
+        }
+
+        function table(cols, rows, empty) {
+            if (!rows.length) return `<div class="empty">${empty}</div>`;
+            return '<table><tr>' + cols.map(c => `<th>${c[0]}</th>`).join('') + '</tr>' + rows.map(r => '<tr>' + cols.map(c => `<td>${c[1](r)}</td>`).join('') + '</tr>').join('') + '</table>';
+        }
+
+        function drawChart(h) {
+            const c = $('chart'),
+                dpr = window.devicePixelRatio || 1,
+                w = c.clientWidth,
+                hh = c.clientHeight;
+            c.width = w * dpr;
+            c.height = hh * dpr;
+            const g = c.getContext('2d');
+            g.scale(dpr, dpr);
+            g.clearRect(0, 0, w, hh);
+            const cs = getComputedStyle(document.documentElement);
+            g.strokeStyle = cs.getPropertyValue('--line');
+            g.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const y = 4 + (hh - 8) * i / 4;
+                g.beginPath();
+                g.moveTo(0, y);
+                g.lineTo(w, y);
+                g.stroke();
+            }
+            if (h.length < 2) return;
+            const qmax = Math.max(10, ...h.map(p => p.queue));
+            const line = (key, col, scale) => {
+                g.strokeStyle = cs.getPropertyValue(col);
+                g.lineWidth = 2;
+                g.beginPath();
+                h.forEach((p, i) => {
+                    const x = i / (h.length - 1) * (w - 2) + 1,
+                        y = hh - 4 - (hh - 8) * Math.min(1, p[key] * scale);
+                    i ? g.lineTo(x, y) : g.moveTo(x, y);
+                });
+                g.stroke();
+            };
+            line('util', '--acc', 1);
+            line('mem_util', '--ok', 1);
+            line('queue', '--warn', 1 / qmax);
+        }
+
+        function render(s) {
+            S = s;
+            const m = s.metrics;
+            $('kpis').innerHTML = kpi('Tick', s.t) + kpi('Queued', s.n_queue) + kpi('Running', s.n_running) + kpi('Completed', m.jobs_done) + kpi('Avg JCT', f(m.avg_jct, 1)) + kpi('Miss rate', pct(m.miss_rate)) + kpi('Max wait', f(m.max_wait, 0)) + kpi('GPUs busy now', pct(s.busy_now)) + kpi('Memory used', pct(s.mem_now)) + kpi('Avg GPU util', pct(m.avg_util));
+            if (document.activeElement !== $('policy') || !$('policy').options.length) {
+                $('policy').innerHTML = s.policies.map(p => `<option ${p === s.policy ? 'selected' : ''}>${p}</option>`).join('');
+            }
+            $('policy').value = s.policy;
+            if (document.activeElement !== $('speed')) {
+                $('speed').value = s.speed;
+                $('speedv').textContent = s.speed;
+            }
+            if (document.activeElement !== $('auto')) $('auto').value = s.auto_rate;
+            $('pause').textContent = s.paused ? 'Resume' : 'Pause';
+            for (const id of ['pause', 'end', 'rand1', 'rand10', 'policy', 'speed', 'auto']) $(id).disabled = s.ended;
+            for (const el of $('addform').elements) el.disabled = s.ended;
+            const be = $('modelerr');
+            be.style.display = s.model_error ? 'block' : 'none';
+            be.textContent = s.model_error ? 'PPO model not loaded: ' + s.model_error : '';
+            $('gm').textContent = s.gpu_mem;
+            $('gpus').innerHTML = s.gpu_used.map((u, i) => `<div class="gpu">GPU ${i}<br>${u}/${s.gpu_mem}<div class="bar"><i style="width:${100 * u / s.gpu_mem}%"></i></div></div>`).join('');
+            $('nq').textContent = s.n_queue;
+            $('nr').textContent = s.n_running;
+            $('queue').innerHTML = table([
+                ['job', r => '#' + r.id],
+                ['GPUs', r => r.gpus],
+                ['GB/GPU', r => r.mpg],
+                ['est', r => r.est],
+                ['waited', r => r.waited],
+                ['deadline', r => r.deadline],
+                ['', r => r.fits ? '<span class="tag ok">Fits</span>' : '<span class="tag warn">Blocked</span>']
+            ], s.queue, 'Queue is empty.');
+            $('running').innerHTML = table([
+                ['job', r => '#' + r.id],
+                ['GPUs', r => r.on.join(',')],
+                ['GB/GPU', r => r.mpg],
+                ['progress', r => `<div class="prog"><i style="width:${Math.min(100, r.progress * 100)}%"></i></div>`],
+                ['ends', r => 't=' + r.finish],
+                ['deadline', r => r.finish > r.deadline ? `<span class="tag bad">${r.deadline} Late</span>` : r.deadline]
+            ], s.running, 'Nothing running.');
+            $('done').innerHTML = table([
+                ['job', r => '#' + r.id],
+                ['wait', r => r.wait],
+                ['JCT', r => r.jct],
+                ['', r => r.missed ? '<span class="tag bad">Missed Deadline</span>' : '<span class="tag ok">On Time</span>']
+            ], s.done, 'No jobs completed yet.');
+            drawChart(s.history);
+            renderSummary(s);
+        }
+
+        function renderSummary(s) {
+            const el = $('summary');
+            if (!s.summary) {
+                el.style.display = 'none';
+                return;
+            }
+            const u = s.summary,
+                rep = u.replays || {},
+                names = Object.keys(rep);
+            const cols = [
+                ['avg_jct', 'avg JCT', 1, 'min'],
+                ['miss_rate', 'miss rate', 3, 'min'],
+                ['max_wait', 'max wait', 0, 'min'],
+                ['avg_util', 'GPU util', 3, 'max'],
+                ['avg_mem_util', 'mem util', 3, 'max'],
+                ['makespan', 'makespan', 0, 'min']
+            ];
+            const best = {};
+            cols.forEach(([k, , , dir]) => {
+                const v = names.map(n => rep[n][k]).filter(x => x != null);
+                best[k] = v.length ? (dir === 'min' ? Math.min(...v) : Math.max(...v)) : null;
+            });
+            const L = u.live;
+            let h = `<h2>Session summary</h2>    <p>Policy <b>${u.policy}</b> ran <b>${u.ticks}</b> ticks. Submitted <b>${u.submitted}</b> jobs, completed <b>${u.completed}</b>, unfinished <b>${u.unfinished}</b> (unfinished jobs are not counted in the live figures).</p>    <table><tr><th></th><th>completed</th>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr>    <tr><td><b>This session (live)</b></td><td>${L.jobs_done}</td>${cols.map(c => `<td>${f(L[c[0]], c[2])}</td>`).join('')}</tr></table>`;
+            if (names.length) {
+                h += `<h3>PPO Policy Stats</h3>     <table><tr><th>policy</th>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr>` + names.map(n => `<tr><td>${n}</td>${cols.map(c => { const v = rep[n][c[0]]; return `<td class="${v != null && v === best[c[0]] ? 'best' : ''}">${f(v, c[2])}</td>` }).join('')}</tr>`).join('') + `</table> `;
+            }
+            h += `<h3>Per-job results</h3><div class="scroll">` + table([
+                ['job', r => '#' + r.id],
+                ['GPUs', r => r.gpus],
+                ['status', r => r.status],
+                ['wait', r => r.wait ?? '-'],
+                ['JCT', r => r.jct ?? '-'],
+                ['deadline', r => r.missed == null ? '-' : (r.missed ? '<span class="tag bad">missed</span>' : '<span class="tag ok">met</span>')]
+            ], u.jobs, 'No jobs were submitted.') + `</div>`;
+            el.innerHTML = h;
+            el.style.display = 'block';
+        }
+        async function poll() {
+            try {
+                render(await (await fetch('/api/state')).json());
+            } catch (e) { }
+        }
+        poll();
+        setInterval(poll, 400);
+    </script>
+</body>
+
+</html>

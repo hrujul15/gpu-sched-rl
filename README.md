@@ -1,6 +1,6 @@
-# GPU Cluster Scheduling with Reinforcement Learning
+# RL Based GPU Job Scheduler
 
-A reinforcement-learning scheduler for allocating queued training jobs across a shared GPU cluster. The agent is trained with **MaskablePPO** and evaluated against scheduling baselines under standard and harder workload settings.
+A reinforcement-learning scheduler for allocating queued training jobs across a shared GPU cluster. The agent is trained with **MaskablePPO**.
 
 ## Team
 
@@ -13,7 +13,7 @@ A reinforcement-learning scheduler for allocating queued training jobs across a 
 
 The simulator models a cluster of 16 physical GPUs, each with 40 GB of memory. A job requests a number of distinct GPUs and a memory allocation per selected GPU. Multiple jobs may share a GPU when sufficient device-local memory remains available.
 
-The scheduler observes cluster availability, per-GPU free memory, and features for the first eight queued jobs. Actual job runtime is hidden; the agent receives an estimated runtime. Its goal is to make scheduling and placement decisions that balance job completion, deadlines, waiting time, and resource use.
+The scheduler observes cluster availability, per-GPU free memory, and features for the first eight queued jobs. Actual job runtime is hidden; the agent receives an estimated runtime. Its goal is to make scheduling and placement decisions.
 
 ## Agent and environment
 
@@ -36,19 +36,36 @@ pip install -r requirements.txt
 
 Use Python 3.10 or newer. On Windows, activate the environment with `.venv\Scripts\activate` instead of the `source` command.
 
-## Train and evaluate
+## Train
 
-Run the following commands **in order** from the repository root. Training starts without an imitation-learning warm start and saves the model to `models/ppo_v9_hard`.
+Run the following commands **in order** from the repository root. Training saves the model to `models/ppo_v9_hard`.
 
 ```bash
-python scripts/train.py --workload hard --pretrain-episodes 0 --steps 1000000 --out models/ppo_v9_hard
-python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.4 --episodes 100 --tag v9_hard_seen
-python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.7 --episodes 100 --tag v9_hard_unseen
+python scripts/train.py --workload hard --steps 1000000 --out models/ppo_v9_hard
 ```
 
 The evaluation runs use arrival rate `0.4` for the seen-load setting and `0.7` for the unseen-load setting. Each evaluates 100 episodes. Evaluation outputs are saved under `results/` as CSV data and PNG plots.
 
-Training may take a while. The evaluation commands expect the training command to have completed and the saved model to be present.
+Training may take some time.
+
+## Evaluate
+
+In order to evaluate using the current model,
+
+```bash
+python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.4 --episodes 100 --tag v9_hard_seen
+python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.7 --episodes 100 --tag v9_hard_unseen
+```
+
+## Live simulator UI (PPO only)
+
+A local browser dashboard is included for interacting with the scheduling environment in real time. Make sure model is trained and present otherwise train the model first.
+
+```bash
+python ui/server.py --model models/ppo_v9_hard --workload hard
+```
+
+Open **http://127.0.0.1:8765** in your browser.
 
 ## Repository structure
 
