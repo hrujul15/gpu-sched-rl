@@ -3,10 +3,11 @@
 Design notes
 - Time advances in integer ticks. Starting a job is a zero-time decision, so the
   agent can start several jobs in one tick; the WAIT action advances the clock by 1.
-- Action space: Discrete(K+1). 0..K-1 = start the i-th job of the queue window
-  (queue ordered by arrival), K = wait. Use `action_masks()` with MaskablePPO.
+- Action space: Discrete(2*K+1). For each visible job, choose PACK or SPREAD
+  placement across physical GPUs; the final action waits one tick.
+- Every GPU has its own memory capacity. Multiple jobs may share a GPU when each
+  has enough remaining memory, so placement and fragmentation matter.
 - The agent only sees *estimated* runtimes, never the true ones.
-- Single resource (GPU count). TODO: add GPU memory as a second resource.
 """
 
 from __future__ import annotations
@@ -33,8 +34,10 @@ class RewardConfig:
     w_flow: float = 0.5  # penalise turnaround time on completion
 
 
-JOB_FEATS = 9
-CLUSTER_FEATS = 4
+JOB_FEATS = 12
+BASE_CLUSTER_FEATS = 4
+PACK = 0
+SPREAD = 1
 
 
 class GPUClusterEnv(gym.Env):
@@ -44,33 +47,47 @@ class GPUClusterEnv(gym.Env):
         self,
         n_gpus: int = 16,
         k_queue: int = 8,
-        n_mem: int = 384,
+        gpu_mem_gb: int = 40,
+        n_mem: int | None = None,
         workload: WorkloadConfig | None = None,
         rate_range: tuple[float, float] | None = None,
         reward: RewardConfig | None = None,
         max_ticks: int = 2000,
+        hide_rank_feats: bool = False,
     ):
         super().__init__()
         self.n_gpus = n_gpus
-        self.n_mem = n_mem
+        # n_mem is accepted as a backwards-compatible total-capacity override.
+        if n_mem is not None:
+            if n_mem % n_gpus != 0:
+                raise ValueError("n_mem must be divisible by n_gpus")
+            gpu_mem_gb = n_mem // n_gpus
+        self.gpu_mem_gb = int(gpu_mem_gb)
+        self.n_mem = self.n_gpus * self.gpu_mem_gb
+        if self.gpu_mem_gb <= 0:
+            raise ValueError("gpu_mem_gb must be positive")
 
         self.K = k_queue
         self.wl_cfg = workload or WorkloadConfig()
         assert max(self.wl_cfg.gpu_choices) <= n_gpus
-        assert (
-            max(self.wl_cfg.gpu_choices) * max(self.wl_cfg.mem_per_gpu_choices) <= n_mem
+        assert max(self.wl_cfg.mem_per_gpu_choices) <= self.gpu_mem_gb, (
+            "Every per-GPU memory request must fit on one GPU"
         )
         self.rate_range = (
             rate_range  # sample arrival_rate per episode (for generalization)
         )
         self.rw = reward or RewardConfig()
         self.max_ticks = max_ticks
+        # Ablation: zero the precomputed SJF-rank / relative-runtime features so
+        # the agent must derive any ordering itself from raw est_runtime.
+        self.hide_rank_feats = hide_rank_feats
 
-        self.action_space = spaces.Discrete(self.K + 1)
+        self.action_space = spaces.Discrete(2 * self.K + 1)
+        self.wait_action = 2 * self.K
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(CLUSTER_FEATS + JOB_FEATS * self.K,),
+            shape=(BASE_CLUSTER_FEATS + self.n_gpus + JOB_FEATS * self.K,),
             dtype=np.float32,
         )
         self._rng = np.random.default_rng()
@@ -93,7 +110,8 @@ class GPUClusterEnv(gym.Env):
         self.queue: list[Job] = []  # arrived, waiting
         self.running: list[Job] = []
         self.done: list[Job] = []
-        self.free = self.n_gpus
+        self.gpu_free_mem = np.full(self.n_gpus, self.gpu_mem_gb, dtype=np.int32)
+        self.free = self.n_gpus  # number of completely unused GPUs
         self.free_mem = self.n_mem
         self._mem_util_hist: list[float] = []
         self._util_hist: list[float] = []
@@ -107,9 +125,10 @@ class GPUClusterEnv(gym.Env):
         # allows agent to start many jobs at once
         reward = 0.0
         valid = self.action_masks()
-        if action < self.K and valid[action]:
-            self._start(self.queue[action])
-        elif action == self.K:
+        if 0 <= action < 2 * self.K and valid[action]:
+            job_index, strategy = divmod(int(action), 2)
+            self._start(self.queue[job_index], strategy)
+        elif action == self.wait_action:
             reward += self._tick()
         else:  # invalid action: treat as wait, with a penalty
             reward += self._tick() - self.rw.w_invalid
@@ -122,37 +141,65 @@ class GPUClusterEnv(gym.Env):
     def action_masks(self) -> np.ndarray:
         # do masking, set false to those jobs which cant be chosen
         # at all, so network doesnt try to choose them
-        m = np.zeros(self.K + 1, dtype=bool)
+        m = np.zeros(2 * self.K + 1, dtype=bool)
         for i, job in enumerate(self.queue[: self.K]):
-            m[i] = self._fits(job)
-        m[self.K] = True
+            if self._fits(job):
+                m[2 * i + PACK] = True
+                m[2 * i + SPREAD] = True
+        m[self.wait_action] = True
         return m
 
     # ------------------------------------------------------------ internals
 
-    # if moving to per gpu memory, only edit these 3 functions
     def _fits(self, job: Job) -> bool:
-        return job.gpus <= self.free and job.mem <= self.free_mem
+        """A job fits when at least `job.gpus` physical GPUs have enough memory."""
+        return int(np.count_nonzero(self.gpu_free_mem >= job.mem_per_gpu)) >= job.gpus
 
-    def _allocate(self, job: Job):
-        self.free -= job.gpus
-        self.free_mem -= job.mem
+    def encode_action(self, queue_index: int, strategy: str = "pack") -> int:
+        """Encode a visible queue index and deterministic placement strategy."""
+        strategy_id = PACK if strategy == "pack" else SPREAD
+        return 2 * int(queue_index) + strategy_id
+
+    def _choose_gpus(self, job: Job, strategy: int) -> tuple[int, ...]:
+        eligible = np.flatnonzero(self.gpu_free_mem >= job.mem_per_gpu).tolist()
+        if strategy == PACK:
+            # Consume the tightest-fitting GPUs first, preserving large free blocks.
+            eligible.sort(key=lambda gpu: (self.gpu_free_mem[gpu] - job.mem_per_gpu, gpu))
+        else:
+            # Spread onto the roomiest GPUs first; deterministic ties by GPU id.
+            eligible.sort(key=lambda gpu: (-self.gpu_free_mem[gpu], gpu))
+        if len(eligible) < job.gpus:
+            raise RuntimeError("Placement requested for a job that does not fit")
+        return tuple(eligible[:job.gpus])
+
+    def _refresh_capacity_counters(self):
+        self.free = int(np.count_nonzero(self.gpu_free_mem == self.gpu_mem_gb))
+        self.free_mem = int(self.gpu_free_mem.sum())
+
+    def _allocate(self, job: Job, strategy: int):
+        job.gpu_ids = self._choose_gpus(job, strategy)
+        for gpu in job.gpu_ids:
+            self.gpu_free_mem[gpu] -= job.mem_per_gpu
+        self._refresh_capacity_counters()
 
     def _release(self, job: Job):
-        self.free += job.gpus
-        self.free_mem += job.mem
+        for gpu in job.gpu_ids:
+            self.gpu_free_mem[gpu] += job.mem_per_gpu
+            if self.gpu_free_mem[gpu] > self.gpu_mem_gb:
+                raise RuntimeError("GPU memory accounting exceeded capacity")
+        self._refresh_capacity_counters()
 
     def _admit(self):
         # admit job
         while self.pending and self.pending[0].arrival <= self.t:
             self.queue.append(self.pending.pop(0))
 
-    def _start(self, job: Job):
-        # start a job
+    def _start(self, job: Job, strategy: int = PACK):
+        # Start a job and reserve the selected physical GPUs' memory.
         self.queue.remove(job)
         job.start = self.t
         job.finish = self.t + job.runtime
-        self._allocate(job)
+        self._allocate(job, strategy)
         self.running.append(job)
 
     def _tick(self) -> float:
@@ -166,7 +213,7 @@ class GPUClusterEnv(gym.Env):
         # idle penalty, if gpu free and job can be put on it but not there
         idle = 0.0
         if any(self._fits(j) for j in self.queue[: self.K]):
-            idle = self.rw.w_idle * (self.free / self.n_gpus)
+            idle = self.rw.w_idle * (self.free_mem / self.n_mem)
 
         # starving penalty for jobs ignored for long
         starve = self.rw.w_starve * sum(
@@ -202,7 +249,7 @@ class GPUClusterEnv(gym.Env):
         return r
 
     def _obs(self) -> np.ndarray:
-        # CLUSTER_FEATS + JOB_FEATS * K = 4 + 9*8 = 76 numbers
+        # 4 cluster + n_gpus per-device memory fractions + 12*8 job features
         max_rt = self.wl_cfg.max_runtime
         if self.running:
             next_free = min(j.start + j.est_runtime - self.t for j in self.running)
@@ -215,6 +262,8 @@ class GPUClusterEnv(gym.Env):
             min(len(self.queue), 50) / 50.0,
             next_free,
         ]
+        # Per-device free-memory fractions expose fragmentation directly.
+        gpu_memory = (self.gpu_free_mem / self.gpu_mem_gb).astype(np.float32).tolist()
 
         # Precompute rank and mean runtime for jobs in the visible window
         window = self.queue[: self.K]
@@ -237,19 +286,27 @@ class GPUClusterEnv(gym.Env):
                 slack = (j.deadline - self.t - j.est_runtime) / max_rt
                 feats += [
                     j.gpus / self.n_gpus,
-                    j.mem / self.n_mem,
+                    j.mem_per_gpu / self.gpu_mem_gb,
                     j.est_runtime / max_rt,
                     float(np.clip(slack, -1, 1)),
                     min(self.t - j.arrival, 100) / 100.0,
                     1.0,
                     # ── new SJF-informative features ──
-                    ranks[i] / max(n_win - 1, 1),  # 0 = shortest est_rt
-                    float(np.clip(j.est_runtime / mean_rt - 1.0, -1, 1)),
+                    0.0 if self.hide_rank_feats else ranks[i] / max(n_win - 1, 1),
+                    0.0
+                    if self.hide_rank_feats
+                    else float(np.clip(j.est_runtime / mean_rt - 1.0, -1, 1)),
                     1.0 if self._fits(j) else 0.0,
+                    # Deadline slack before execution, normalized to runtime scale.
+                    float(np.clip((j.deadline - self.t) / max_rt, -1, 1)),
+                    # Estimated runtime per requested GPU.
+                    float(np.clip((j.est_runtime / max(j.gpus, 1)) / max_rt, 0, 1)),
+                    # Normalized time already spent waiting in the queue.
+                    float(np.clip((self.t - j.arrival) / max_rt, 0, 1)),
                 ]
             else:
                 feats += [0.0] * JOB_FEATS
-        return np.asarray(cluster + feats, dtype=np.float32)
+        return np.asarray(cluster + gpu_memory + feats, dtype=np.float32)
 
     def _metrics(self) -> dict:
         # metrics for the run

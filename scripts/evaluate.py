@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from gpusched import GPUClusterEnv, WorkloadConfig
+from gpusched import GPUClusterEnv, workload_preset
 from gpusched.baselines import BASELINES
 
 
@@ -34,9 +34,18 @@ if __name__ == "__main__":
     )
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--tag", default="eval")
+    ap.add_argument("--workload", default="default", choices=["default", "hard"])
+    ap.add_argument("--hide-rank-feats", action="store_true",
+                    help="must match how the model was trained")
     args = ap.parse_args()
 
-    env = GPUClusterEnv(workload=WorkloadConfig(arrival_rate=args.rate))
+    def make_eval_env():
+        return GPUClusterEnv(
+            workload=workload_preset(args.workload, args.rate),
+            hide_rank_feats=args.hide_rank_feats,
+        )
+
+    env = make_eval_env()
     policies = dict(BASELINES)
     if args.model:
         from sb3_contrib import MaskablePPO
@@ -49,13 +58,7 @@ if __name__ == "__main__":
         base = args.model.replace(".zip", "")
         vec_norm_path = base + "_vecnormalize.pkl"
         if os.path.exists(vec_norm_path):
-            dummy = DummyVecEnv(
-                [
-                    lambda: GPUClusterEnv(
-                        workload=WorkloadConfig(arrival_rate=args.rate)
-                    )
-                ]
-            )
+            dummy = DummyVecEnv([make_eval_env])
             vec_norm = VecNormalize.load(vec_norm_path, dummy)
             vec_norm.training = False
             vec_norm.norm_reward = False

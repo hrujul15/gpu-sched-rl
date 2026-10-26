@@ -1,68 +1,73 @@
-# gpu-sched-rl
+# GPU Cluster Scheduling with Reinforcement Learning
 
-Reinforcement-learning scheduler for training jobs on a shared GPU cluster
-(AI course, Assignment 2: real-life use cases of RL).
+A reinforcement-learning scheduler for allocating queued training jobs across a shared GPU cluster. The agent is trained with **MaskablePPO** and evaluated against scheduling baselines under standard and harder workload settings.
 
 ## Team
 
-| Name           | Roll No. |
-|----------------|----------|
-| Hrujul Mendhe  | B24CM1077 |
-| Atharv Sharma  | B24CM1013 |
+| Name | Roll No. |
+|---|---|
+| Hrujul Mendhe | B24CM1077 |
+| Atharv Sharma | B24CM1013 |
 
 ## Problem
-Jobs arrive online with a GPU request, a noisy runtime estimate and a deadline.
-The agent decides which queued job to start (or to wait) so as to maximize
-throughput and utilization while limiting deadline misses and starvation.
 
-## RL formulation
-- **State (3 + 5K dims, K = 8):** free GPUs, queue length, estimated time until the
-  next GPU frees; per queued job (first K by arrival): GPU request, estimated
-  runtime, deadline slack, wait time, valid flag.
-- **Actions (Discrete K+1):** start the i-th queued job, or wait one tick. Invalid
-  starts (job does not fit) are masked.
-- **Reward (per step):** +`w_complete` per finished job, -`w_miss` per missed
-  deadline, +`w_util` x utilization per tick, -`w_starve` per starving job per tick.
-  Weights live in `RewardConfig`.
-- **Algorithm:** MaskablePPO (sb3-contrib). Baselines: FIFO, SJF, EDF, EASY backfill.
+The simulator models a cluster of 16 physical GPUs, each with 40 GB of memory. A job requests a number of distinct GPUs and a memory allocation per selected GPU. Multiple jobs may share a GPU when sufficient device-local memory remains available.
+
+The scheduler observes cluster availability, per-GPU free memory, and features for the first eight queued jobs. Actual job runtime is hidden; the agent receives an estimated runtime. Its goal is to make scheduling and placement decisions that balance job completion, deadlines, waiting time, and resource use.
+
+## Agent and environment
+
+- **Algorithm:** MaskablePPO from `sb3-contrib`.
+- **Actions:** Select one of the visible queued jobs and choose `PACK` or `SPREAD` placement, or wait for one simulation tick. Invalid actions are masked.
+- **Reward:** Combines completion rewards with penalties for deadline misses and lateness, flow time, queue waiting and starvation, and idle capacity. Reward weights are defined in `gpusched/env.py`.
+- **Baselines:** FIFO, SJF, EDF, backfill, and best-fit use the same memory-feasibility rules.
+
+The final run uses the `hard` workload, which introduces more challenging job characteristics, including decoupled deadlines, more wide jobs, and noisier runtime estimates.
 
 ## Setup
+
+From the repository root, create and activate a virtual environment, then install the dependencies:
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+Use Python 3.10 or newer. On Windows, activate the environment with `.venv\Scripts\activate` instead of the `source` command.
+
+## Train and evaluate
+
+Run the following commands **in order** from the repository root. Training starts without an imitation-learning warm start and saves the model to `models/ppo_v9_hard`.
+
 ```bash
-python scripts/train.py --steps 300000 --out models/ppo_v1
-python scripts/evaluate.py --model models/ppo_v1 --rate 0.5 --episodes 30 --tag seen_load
-python scripts/evaluate.py --model models/ppo_v1 --rate 0.9 --episodes 30 --tag unseen_load
-```
-Training samples the arrival rate from 0.3-0.7 per episode; evaluating at 0.9
-tests generalization to an unseen load. Results (CSV + bar plots) go to `results/`.
-
-## Layout
-```
-gpusched/jobs.py       job model, synthetic workload, trace-loader stub
-gpusched/env.py        Gymnasium environment (own event loop, action masking)
-gpusched/baselines.py  FIFO / SJF / EDF / backfill
-scripts/train.py       MaskablePPO training
-scripts/evaluate.py    baselines vs agent on fixed seeds
-tests/test_env.py      sanity tests
+python scripts/train.py --workload hard --pretrain-episodes 0 --steps 1000000 --out models/ppo_v9_hard
+python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.4 --episodes 100 --tag v9_hard_seen
+python scripts/evaluate.py --model models/ppo_v9_hard --workload hard --rate 0.7 --episodes 100 --tag v9_hard_unseen
 ```
 
-## Roadmap
-- [ ] Learning curves (log episode reward during training) and seed variance
-- [ ] Reward-weight ablation (utilization vs deadline vs starvation)
-- [ ] Load real traces (Philly / Helios / Alibaba PAI) in `load_trace_csv`
-- [ ] Add GPU memory as a second resource
-- [ ] Noisy-estimate ablation (`est_noise`) to show where SJF breaks down
-- [ ] Compare PPO vs DQN
-- [ ] 2-page report
+The evaluation runs use arrival rate `0.4` for the seen-load setting and `0.7` for the unseen-load setting. Each evaluates 100 episodes. Evaluation outputs are saved under `results/` as CSV data and PNG plots.
 
-## Notes
-The simulator is a plain Python event loop rather than SimPy, because the agent
-needs to step the clock decision by decision. SimPy can be added later if you
-want process-style modelling.
+Training may take a while. The evaluation commands expect the training command to have completed and the saved model to be present.
 
+## Repository structure
 
+```text
+gpusched/
+  jobs.py        Job definitions and workload generation
+  env.py         Scheduling environment, memory accounting, rewards, action masks
+  baselines.py   FIFO, SJF, EDF, backfill, and best-fit baselines
+scripts/
+  train.py       MaskablePPO training
+  evaluate.py    Agent-versus-baselines evaluation
+models/          Saved model checkpoints and normalization statistics
+results/          Evaluation CSV files and plots
+requirements.txt Python dependencies
+```
+
+## Modelling assumptions
+
+- GPU memory is tracked separately for each physical GPU.
+- A job can share a physical GPU with other jobs only when its requested memory fits.
+- The reported GPU allocation/utilization metric indicates whether a GPU has any allocation; it does not model actual compute utilization or compute sharing.
+- Runtime estimates are observations available to the scheduler; true runtimes are not directly exposed.

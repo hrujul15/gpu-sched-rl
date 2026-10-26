@@ -5,7 +5,11 @@ from __future__ import annotations
 
 
 def _wait(env) -> int:
-    return env.K
+    return env.wait_action
+
+
+def _pack(env, index: int) -> int:
+    return env.encode_action(index, "pack")
 
 
 def _fitting(env):
@@ -15,7 +19,7 @@ def _fitting(env):
 def fifo(env) -> int:
     """Strict FIFO: only the head of the queue may start (head-of-line blocking)."""
     if env.queue and env._fits(env.queue[0]):
-        return 0
+        return _pack(env, 0)
     return _wait(env)
 
 
@@ -24,7 +28,7 @@ def sjf(env) -> int:
     cand = _fitting(env)
     if not cand:
         return _wait(env)
-    return min(cand, key=lambda x: x[1].est_runtime)[0]
+    return _pack(env, min(cand, key=lambda x: x[1].est_runtime)[0])
 
 
 def edf(env) -> int:
@@ -32,41 +36,52 @@ def edf(env) -> int:
     cand = _fitting(env)
     if not cand:
         return _wait(env)
-    return min(cand, key=lambda x: x[1].deadline)[0]
+    return _pack(env, min(cand, key=lambda x: x[1].deadline)[0])
 
 
 def backfill(env) -> int:
-    """EASY-style backfilling: FIFO, but let later jobs jump ahead if they are
-    estimated to finish before the blocked head job could start."""
+    """FIFO with backfilling if the head job is expected to fit after releases."""
     if not env.queue:
         return _wait(env)
     head = env.queue[0]
     if env._fits(head):
-        return 0
-    # shadow time: earliest (estimated) time enough GPUs free up for the head
-    avail_g, avail_m, shadow = env.free, env.free_mem, env.t
-    for j in sorted(env.running, key=lambda j: j.start + j.est_runtime):
-        avail_g += j.gpus
-        avail_m += j.mem
-        shadow = j.start + j.est_runtime
-        if avail_g >= head.gpus and avail_m >= head.mem:
+        return _pack(env, 0)
+
+    # Simulate memory releases in estimated completion order. A released job
+    # returns memory to the exact GPUs on which it was placed.
+    simulated = env.gpu_free_mem.copy()
+    shadow = env.t
+    for running in sorted(env.running, key=lambda j: (j.start + j.est_runtime, j.jid)):
+        for gpu in running.gpu_ids:
+            simulated[gpu] += running.mem_per_gpu
+        shadow = running.start + running.est_runtime
+        if int((simulated >= head.mem_per_gpu).sum()) >= head.gpus:
             break
-    for i, j in _fitting(env):
-        if i != 0 and env.t + j.est_runtime <= shadow:
-            return i
+    else:
+        # If estimates never predict a feasible placement, don't backfill on
+        # a made-up reservation time; normal SJF-like backfill is safer.
+        shadow = env.t
+
+    for i, job in _fitting(env):
+        if i != 0 and env.t + job.est_runtime <= shadow:
+            return _pack(env, i)
     return _wait(env)
 
 
 def bestfit(env) -> int:
-    """Start the fitting job that leaves the least unused capacity (both resources)."""
+    """Choose the job whose PACK placement leaves the least residual memory on selected GPUs."""
     cand = _fitting(env)
     if not cand:
         return _wait(env)
 
-    def leftover(j):
-        return (env.free - j.gpus) / env.n_gpus + (env.free_mem - j.mem) / env.n_mem
+    def placement_waste(item):
+        _, job = item
+        chosen = env._choose_gpus(job, 0)
+        residual = sum(env.gpu_free_mem[gpu] - job.mem_per_gpu for gpu in chosen)
+        # Prefer tighter fits; lightly break ties in favor of shorter jobs.
+        return residual / env.n_mem, job.est_runtime
 
-    return min(cand, key=lambda x: leftover(x[1]))[0]
+    return _pack(env, min(cand, key=placement_waste)[0])
 
 
 BASELINES = {
